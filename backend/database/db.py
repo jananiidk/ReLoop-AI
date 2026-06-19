@@ -4,7 +4,7 @@ DB_CONFIG = {
     "host": "localhost",
     "database": "reloop_ai",
     "user": "postgres",
-    "password": "REPLACE_WITH_YOUR_PASSWORD",
+    "password": "postgres123",
     "port": "5432"
 }
 
