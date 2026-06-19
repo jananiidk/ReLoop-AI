@@ -19,8 +19,8 @@ const client = axios.create({
 client.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (!useSimulator && (!error.response || error.code === 'ECONNABORTED' || error.message.includes('Network Error'))) {
-      console.warn('Backend API connection failed. ReLoop AI is automatically switching to High-Fidelity Client-Side Simulation Mode for the hackathon demo.');
+    if (!useSimulator) {
+      console.warn('Backend API connection failed or returned an error. ReLoop AI is automatically switching to High-Fidelity Client-Side Simulation Mode for the hackathon demo.');
       useSimulator = true;
     }
     return Promise.reject(error);
@@ -96,10 +96,35 @@ export const registerDevice = async (deviceData) => {
     return simulateRegisterDevice(deviceData);
   }
   try {
-    const res = await client.post('/register-device', deviceData);
-    return res.data;
+    const currentYear = new Date().getFullYear();
+    const age = Math.max(0, currentYear - Number(deviceData.purchase_year));
+    
+    // Construct payload matching DeviceInput schema
+    const payload = {
+      device_name: deviceData.device_name,
+      age: age,
+      battery_health: Number(deviceData.battery_health),
+      repair_count: Number(deviceData.repair_count),
+      usage_hours: Number(deviceData.usage_hours)
+    };
+
+    const res = await client.post('/register-device', payload);
+    
+    const resaleValue = calculateResaleValue(
+      deviceData.device_name, 
+      age, 
+      Number(deviceData.battery_health), 
+      Number(deviceData.repair_count)
+    );
+    
+    return {
+      id: res.data.device_id || `dev_${Math.random().toString(36).substr(2, 9)}`,
+      ...deviceData,
+      age,
+      resale_value: resaleValue
+    };
   } catch (error) {
-    // After interceptor sets useSimulator=true, fall back to simulation
+    useSimulator = true;
     return simulateRegisterDevice(deviceData);
   }
 };
@@ -109,9 +134,35 @@ export const predictRisk = async (deviceParams) => {
     return simulatePredictRisk(deviceParams);
   }
   try {
-    const res = await client.post('/predict-risk', deviceParams);
-    return res.data;
+    const payload = {
+      device_name: deviceParams.device_name || 'Galaxy S21',
+      age: Number(deviceParams.age) || 0,
+      battery_health: Number(deviceParams.battery_health) || 80,
+      repair_count: Number(deviceParams.repair_count) || 0,
+      usage_hours: Number(deviceParams.usage_hours) || 4
+    };
+    
+    const res = await client.post('/predict-risk', payload);
+    const risk = res.data.discard_risk;
+    
+    // Enrich with trend forecast
+    const riskTrend = [];
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'];
+    let currentRisk = Math.max(10, risk - 20);
+    for (let i = 0; i < months.length; i++) {
+      riskTrend.push({
+        month: months[i],
+        risk: Math.round(currentRisk),
+      });
+      currentRisk += (risk - currentRisk) / (months.length - i);
+    }
+    
+    return {
+      discard_risk: risk,
+      risk_trend: riskTrend
+    };
   } catch (error) {
+    useSimulator = true;
     return simulatePredictRisk(deviceParams);
   }
 };
@@ -121,9 +172,47 @@ export const getRecommendation = async (deviceParams) => {
     return simulateGetRecommendation(deviceParams);
   }
   try {
-    const res = await client.post('/recommend-action', deviceParams);
-    return res.data;
+    const payload = {
+      device_name: deviceParams.device_name || 'Galaxy S21',
+      age: Number(deviceParams.age) || 0,
+      battery_health: Number(deviceParams.battery_health) || 80,
+      repair_count: Number(deviceParams.repair_count) || 0,
+      usage_hours: Number(deviceParams.usage_hours) || 4
+    };
+    
+    const res = await client.post('/recommend-action', payload);
+    
+    const recommend = res.data.recommendation || 'Sell';
+    const resaleVal = res.data.resale_value || deviceParams.resale_value || 200;
+    const model = deviceParams.device_name || 'Galaxy S21';
+    const age = Number(deviceParams.age) || 2;
+    const info = SAMSUNG_MODELS_INFO[model] || { originalPrice: 600, repairability: 7, carbonSavedPerAction: { repair: 50, sell: 58, donate: 61, recycle: 45 } };
+    const repairCost = Math.round(info.originalPrice * 0.18 + (age * 30));
+    
+    let explanation = "";
+    if (recommend === "Sell") {
+      explanation = `Your ${model}'s battery is in good health (${deviceParams.battery_health}%). Selling it now yields high circular value ($${resaleVal}) before deeper hardware depreciation.`;
+    } else if (recommend === "Repair") {
+      explanation = `The estimated repair cost ($${repairCost}) is less than the device's remaining resale potential ($${resaleVal}). Replacing the battery can restore performance and add years to its lifecycle.`;
+    } else if (recommend === "Donate") {
+      explanation = `While not optimal for high-value resale, this ${model} is still highly functional for schools or community clinics. Donating extends device usage and offsets carbon footprints.`;
+    } else {
+      explanation = `The hardware is legacy or degraded. Professional recycling ensures raw precious metals (gold, copper, lithium) are safely extracted to build new Samsung devices, avoiding toxic landfill leaks.`;
+    }
+    
+    const savedCarbon = info.carbonSavedPerAction[recommend.toLowerCase()] || 40;
+    
+    return {
+      recommendation: recommend,
+      explanation,
+      repair_cost_est: repairCost,
+      carbon_saved_kg: savedCarbon,
+      water_saved_liters: savedCarbon * 12,
+      landfill_prevented_g: 180,
+      resale_value: resaleVal
+    };
   } catch (error) {
+    useSimulator = true;
     return simulateGetRecommendation(deviceParams);
   }
 };
@@ -133,9 +222,37 @@ export const getSustainabilityScore = async (deviceParams) => {
     return simulateGetSustainabilityScore(deviceParams);
   }
   try {
-    const res = await client.post('/sustainability-score', deviceParams);
-    return res.data;
+    const payload = {
+      device_name: deviceParams.device_name || 'Galaxy S21',
+      age: Number(deviceParams.age) || 0,
+      battery_health: Number(deviceParams.battery_health) || 80,
+      repair_count: Number(deviceParams.repair_count) || 0,
+      usage_hours: Number(deviceParams.usage_hours) || 4
+    };
+    
+    const res = await client.post('/recommend-action', payload);
+    
+    const score = res.data.sustainability_score || 70;
+    const resaleVal = res.data.resale_value || 200;
+    const model = deviceParams.device_name || 'Galaxy S21';
+    const info = SAMSUNG_MODELS_INFO[model] || { originalPrice: 600, repairability: 7, carbonMfg: 60 };
+    
+    const batteryScore = Number(deviceParams.battery_health) || 80;
+    const resalePotential = Math.min(Math.round((resaleVal / info.originalPrice) * 100), 100);
+    const repairabilityScore = info.repairability * 10;
+    const carbonImpactScore = Math.max(0, 100 - Math.round(info.carbonMfg * 0.4));
+    
+    return {
+      score: score,
+      breakdown: {
+        battery_health: batteryScore,
+        resale_potential: resalePotential,
+        repairability: repairabilityScore,
+        carbon_impact: 100 - carbonImpactScore,
+      }
+    };
   } catch (error) {
+    useSimulator = true;
     return simulateGetSustainabilityScore(deviceParams);
   }
 };
